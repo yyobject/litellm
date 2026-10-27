@@ -169,6 +169,21 @@ def test_prompt_tokens_details_cache_write_creation_stay_in_sync_on_assignment()
 
 
 
+@pytest.mark.parametrize("supports_output_config", (True, False))
+def test_get_model_info_preserves_output_config_capability(supports_output_config: bool) -> None:
+    litellm.register_model(
+        {
+            "anthropic/opaque-effort-model": {
+                "litellm_provider": "anthropic",
+                "mode": "chat",
+                "supports_output_config": supports_output_config,
+            }
+        }
+    )
+    info: Final = litellm.get_model_info(model="opaque-effort-model", custom_llm_provider="anthropic")
+    assert info["supports_output_config"] is supports_output_config
+
+
 def test_get_model_info_surfaces_supports_adaptive_thinking(local_model_cost_map):
     """supports_adaptive_thinking must flow through get_model_info like every other
     capability flag: both from an explicit cost-map entry and from a

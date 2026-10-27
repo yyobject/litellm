@@ -8,12 +8,15 @@ should still use the built-in pricing.
 """
 
 import copy
+import json
 import logging
 import os
 import re
+from typing import Final, Literal
 from unittest.mock import patch
 
 import pytest
+import respx
 
 
 import litellm
@@ -39,6 +42,80 @@ def _simulate_price_data_reload(fetched_catalog):
     litellm.model_cost = fetched_catalog
     _invalidate_model_cost_lowercase_map()
     reapply_runtime_model_cost_registrations()
+
+
+@pytest.mark.parametrize("configured_empty_list", (False, True))
+@pytest.mark.parametrize("entrypoint", ("chat_effort", "chat_native", "messages_native"))
+@pytest.mark.asyncio
+async def test_db_model_keeps_thinking_display_after_price_data_reload(
+    configured_empty_list: bool,
+    entrypoint: Literal["chat_effort", "chat_native", "messages_native"],
+    monkeypatch: pytest.MonkeyPatch,
+    respx_mock: respx.MockRouter,
+) -> None:
+    native_model: Final = f"opaque-thinking-{entrypoint}-{configured_empty_list}"
+    fetched_catalog: Final = copy.deepcopy(litellm.model_cost)
+    monkeypatch.setattr(litellm, "drop_params", True)
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    router: Final = Router(model_list=[]) if configured_empty_list else Router()
+    router.add_deployment(
+        Deployment(
+            model_name="reasoning-alias",
+            litellm_params=LiteLLM_Params(
+                model=native_model,
+                custom_llm_provider="anthropic",
+                api_key="test-key",
+                api_base="https://thinking.test",
+            ),
+            model_info=ModelInfo(
+                id=f"{native_model}-id",
+                mode="chat",
+                litellm_provider="anthropic",
+                supports_reasoning=True,
+                supports_adaptive_thinking=True,
+                supports_output_config=True,
+            ),
+        )
+    )
+    _simulate_price_data_reload(fetched_catalog)
+    upstream: Final = respx_mock.post("https://thinking.test/v1/messages").respond(
+        json={
+            "id": "msg_reasoning",
+            "type": "message",
+            "role": "assistant",
+            "model": native_model,
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+    controls: Final = (
+        {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "high"}}
+        if entrypoint != "chat_effort"
+        else {"reasoning_effort": "high"}
+    )
+    call: Final = router.aanthropic_messages if entrypoint == "messages_native" else router.acompletion
+    await call(
+        model="reasoning-alias",
+        messages=[{"role": "user", "content": "ok"}],
+        max_tokens=16384,
+        num_retries=0,
+        **controls,
+    )
+    assert len(upstream.calls) == 1
+    assert json.loads(upstream.calls[0].request.content) == {
+        "model": native_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": "ok" if entrypoint == "messages_native" else [{"type": "text", "text": "ok"}],
+            }
+        ],
+        "max_tokens": 16384,
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": "high"},
+        **({"stream": False} if entrypoint == "messages_native" else {}),
+    }
 
 
 def _nested_container_ids(value: object) -> frozenset[int]:
