@@ -8,7 +8,6 @@ from typing import Final
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
-
 from mock_common import (
     RequestLog,
     bool_field,
@@ -18,6 +17,7 @@ from mock_common import (
     str_field,
     stream_reply,
 )
+from transport_scenarios import mount_transport_scenarios
 
 SSE: Final = "text/event-stream"
 
@@ -26,6 +26,7 @@ def build_app() -> FastAPI:
     app: Final = FastAPI(title="perf mock anthropic")
     log: Final = RequestLog("anthropic")
     mount_control(app, log)
+    mount_transport_scenarios(app)
 
     async def messages(request: Request) -> Response:
         body: Final = parse_json(await request.body())
